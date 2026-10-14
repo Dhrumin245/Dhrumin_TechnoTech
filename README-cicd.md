@@ -1,52 +1,44 @@
-# CI/CD Pipeline Documentation
+# CI/CD Pipeline
 
-This project uses **GitHub Actions** for Continuous Integration (CI) and Continuous Deployment (CD). The pipeline automatically validates, tests, builds, and deploys code when changes are pushed to GitHub.
+GitHub Actions validates every change and deploys the frontend to Vercel from `main`.
+Files: `.github/workflows/ci-cd.yml`, `.github/workflows/codeql.yml`, `.github/dependabot.yml`.
 
----
+## What runs
 
-## 🚀 Workflow Overview (`.github/workflows/ci-cd.yml`)
-
-The CI/CD pipeline consists of 4 main jobs:
-
-1. **Lint and Test (`lint-and-test`)**
-   - Runs on every `push` and `pull_request` to `main` or `master`.
-   - Sets up Node.js 20.x with dependency caching.
-   - Installs root, Backend, and frontend dependencies (`npm ci`).
-   - Runs code quality checks (`npm run lint --prefix my-app`).
-   - Runs automated unit & integration test suites for both backend and frontend (`vitest`).
-
-2. **Build (`build`)**
-   - Runs automatically after tests pass successfully.
-   - Builds the React Vite application (`npm run build --prefix my-app`).
-   - Packages and uploads the production bundle (`dist` folder) as a GitHub Pages deployment artifact.
-
-3. **Deploy to GitHub Pages (`deploy-github-pages`)**
-   - Triggers automatically on pushes to the `main` or `master` branch.
-   - Publishes the compiled frontend directly to **GitHub Pages**.
-
-4. **Deploy to Vercel (`deploy-vercel`)**
-   - Optional production trigger for Vercel deployments when Vercel credentials are saved in repository secrets.
-
----
-
-## 🔐 Setting Up GitHub Repository Secrets
-
-To support automated deployment and database connections in production or staging CI environments, add the following secrets to your GitHub repository under **Settings > Secrets and variables > Actions > New repository secret**:
-
-| Secret Name | Description | Example / Usage |
+| Job | When | What it does |
 | :--- | :--- | :--- |
-| `MONGODB_URI` | Connection URI for production MongoDB database | `mongodb+srv://user:pass@cluster.mongodb.net/portfolio` |
-| `JWT_SECRET` | Secret key for auth token signing in Backend | `your_super_secret_jwt_key` |
-| `VERCEL_TOKEN` | Vercel personal access token for CLI deployments | `abc123xyz...` |
-| `VERCEL_ORG_ID` | Vercel Team / Organization ID | `team_xxx...` |
-| `VERCEL_PROJECT_ID` | Vercel Project ID | `prj_xxx...` |
+| **Backend - test** | every push / PR | `npm ci`, syntax-checks `server.js` + `app.js`, runs the backend test suite (unit **and security tests**). |
+| **Frontend - lint, test, build** | every push / PR | `npm ci`, ESLint, Vitest, production build. Then two guards: no admin/CMS code in the bundle, and the CSP hash in `vercel.json` matches the built `index.html`. Uploads the `dist` artifact. |
+| **Security - dependency audit** | every push / PR | `npm audit --omit=dev --audit-level=high` for Backend and my-app. Fails on high/critical advisories in production dependencies. |
+| **Deploy - Vercel (production)** | push to `main`/`master`, after the three jobs above pass | `vercel pull` → `vercel build --prod` → `vercel deploy --prebuilt --prod`. **Skipped automatically** until the three Vercel secrets exist. |
+| **Smoke test - API health** | after deploy, only if `API_HEALTH_URL` is set | Calls your backend's `/api/health` up to 5 times. |
+| **CodeQL** (separate workflow) | push / PR / weekly | GitHub's static security analysis (`security-extended` queries). |
 
----
+Dependabot opens weekly PRs for npm dependencies and monthly PRs for GitHub Actions.
 
-## 🌐 Enabling GitHub Pages
+## Setup (Settings → Secrets and variables → Actions)
 
-To view your automated frontend deployment on GitHub Pages:
-1. Go to your repository on GitHub.
-2. Navigate to **Settings > Pages**.
-3. Under **Build and deployment > Source**, select **GitHub Actions**.
-4. Once enabled, every push to `main` will automatically deploy your latest frontend build!
+**Secrets** (only needed for the Vercel deploy job):
+
+| Name | Where to find it |
+| :--- | :--- |
+| `VERCEL_TOKEN` | Vercel → Account Settings → Tokens |
+| `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` | `.vercel/project.json` after running `npx vercel link` once |
+
+**Variables** (optional):
+
+| Name | Purpose |
+| :--- | :--- |
+| `VITE_API_URL` | Backend URL baked into the CI build check |
+| `API_HEALTH_URL` | e.g. `https://your-backend.example.com/api/health` - enables the smoke test |
+
+## Notes
+
+- **Backend deploys** are not done by this workflow. Keep using your host's GitHub integration (Railway/Render/Koyeb); it will deploy from `main`. Make sure its health check points to `/api/health`.
+- **Double deploys:** if Vercel's own Git integration is already enabled for this repo, either disable it or leave the secrets unset so only one of the two deploys.
+- **Vercel Root Directory:** the workflow runs the Vercel CLI from the repo root. If your Vercel project has *Root Directory = `my-app`*, that works as-is (the CLI reads the project setting). If it has no Root Directory set, add `working-directory: my-app` to the three Vercel steps.
+- **Backend CORS** only trusts `https://www.dhrumintechnotech.in`, `https://dhrumintechnotech.in` and localhost by default. If the site is ever served from another origin (a Vercel project URL, a preview, staging), add that exact origin to the backend's `ALLOWED_ORIGINS` env var (comma-separated, no wildcards) - otherwise the contact form will get a 403.
+- **GitHub Pages** is no longer part of the pipeline: the site is a BrowserRouter SPA served from a custom domain on Vercel, which Pages cannot host correctly without extra routing workarounds.
+- **Changing your backend URL?** The CSP in `my-app/vercel.json` only lets the browser talk to your API origin (`connect-src`). Update it there when the backend moves; if the repo variable `VITE_API_URL` is set, CI fails when it isn't allowed.
+- **Editing `index.html`'s inline analytics script?** The CSP in `my-app/vercel.json` pins its SHA-256. The frontend test `csp.test.js` and the CI guard will fail until you update the hash in `vercel.json`.
+- Run the same checks locally: `npm test --prefix Backend`, `npm run lint --prefix my-app`, `npm test --prefix my-app`, `npm run build --prefix my-app`.

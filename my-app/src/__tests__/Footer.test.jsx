@@ -19,4 +19,16 @@ describe('Footer component', () => {
     expect(screen.getByRole('heading', { level: 4, name: /Solutions/i })).toBeInTheDocument();
     expect(screen.getByText(/DHRUMIN TECH(NOTECH)? WORLD/i)).toBeInTheDocument();
   });
+
+  it('shows the contact email without stray brackets and links it with a valid mailto', () => {
+    render(
+      <MemoryRouter>
+        <Footer />
+      </MemoryRouter>
+    );
+
+    const mail = screen.getByRole('link', { name: 'dhrumintechnotech@gmail.com' });
+    expect(mail).toHaveAttribute('href', 'mailto:dhrumintechnotech@gmail.com');
+    expect(mail.textContent).not.toMatch(/[[\]]/);
+  });
 });

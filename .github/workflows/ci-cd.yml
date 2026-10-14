@@ -1,0 +1,195 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Cancel superseded runs on PRs, but never cancel a deploy that is already running on main.
+concurrency:
+  group: ci-cd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege by default; jobs that need more declare it themselves.
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # ───────────────────────── Backend: tests (incl. security tests) ─────────────────────────
+  backend:
+    name: Backend - test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: Backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Syntax check entrypoints
+        run: |
+          node --check server.js
+          node --check app.js
+      - name: Run unit + security tests
+        run: npm test
+
+  # ───────────────────────── Frontend: lint, test, build ─────────────────────────
+  frontend:
+    name: Frontend - lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+      - name: Guard - removed admin/case-study code must not reappear in the bundle
+        run: |
+          if grep -rEl "x-admin-api-key|ADMIN_API_KEY|VITE_ADMIN|/api/projects" dist; then
+            echo "::error::Admin/CMS references found in production bundle"; exit 1
+          fi
+      - name: Guard - CSP hash must match the built index.html inline script
+        run: |
+          node -e "
+            const fs=require('fs'),c=require('crypto');
+            const html=fs.readFileSync('dist/index.html','utf8');
+            const csp=JSON.parse(fs.readFileSync('vercel.json','utf8')).headers[0].headers.find(h=>h.key==='Content-Security-Policy').value;
+            const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
+            for (const s of scripts) {
+              const h='sha256-'+c.createHash('sha256').update(s).digest('base64');
+              if(!csp.includes(h)){console.error('::error::CSP missing hash '+h);process.exit(1);}
+            }
+            console.log('CSP hashes OK for '+scripts.length+' inline script(s)');
+          "
+      - name: Guard - API origin (VITE_API_URL) must be allowed by the CSP connect-src
+        if: ${{ vars.VITE_API_URL != '' }}
+        env:
+          API_URL: ${{ vars.VITE_API_URL }}
+        run: |
+          node -e "
+            const fs=require('fs');
+            const origin=new URL(process.env.API_URL).origin;
+            const csp=JSON.parse(fs.readFileSync('vercel.json','utf8')).headers[0].headers.find(h=>h.key==='Content-Security-Policy').value;
+            const connect=csp.split(';').map(d=>d.trim()).find(d=>d.startsWith('connect-src'))||'';
+            if(!connect.split(' ').includes(origin)){console.error('::error::'+origin+' is not in connect-src; the contact form would be blocked in browsers. Update my-app/vercel.json.');process.exit(1);}
+            console.log('connect-src allows '+origin);
+          "
+      - name: Upload production build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: my-app/dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # ───────────────────────── Dependency vulnerability audit ─────────────────────────
+  security-audit:
+    name: Security - dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Audit backend (production deps)
+        working-directory: Backend
+        run: npm audit --omit=dev --audit-level=high
+      - name: Audit frontend (production deps)
+        working-directory: my-app
+        run: npm audit --omit=dev --audit-level=high
+      - name: Report dev-dependency advisories (non-blocking)
+        run: |
+          (cd Backend && npm audit --audit-level=high || true)
+          (cd my-app && npm audit --audit-level=high || true)
+
+  # ───────────────────────── Deploy frontend to Vercel (main only) ─────────────────────────
+  # Skipped automatically until VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID secrets exist.
+  # NOTE: if you also enabled Vercel's own Git integration, disable one of the two to avoid double deploys.
+  deploy-vercel:
+    name: Deploy - Vercel (production)
+    needs: [backend, frontend, security-audit]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - name: Check Vercel credentials
+        id: creds
+        run: |
+          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Vercel secrets not configured - skipping deploy."
+          fi
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.enabled == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.enabled == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Pull Vercel project settings
+        if: steps.creds.outputs.enabled == 'true'
+        run: npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - name: Build
+        if: steps.creds.outputs.enabled == 'true'
+        run: npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+      - name: Deploy
+        id: deploy
+        if: steps.creds.outputs.enabled == 'true'
+        run: |
+          url=$(npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $url" >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────── Post-deploy smoke test of the API ─────────────────────────
+  # Runs only if the repository variable API_HEALTH_URL is set, e.g. https://your-backend.example.com/api/health
+  smoke-test:
+    name: Smoke test - API health
+    needs: [deploy-vercel]
+    if: ${{ vars.API_HEALTH_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check /api/health
+        env:
+          API_HEALTH_URL: ${{ vars.API_HEALTH_URL }}
+        run: |
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$API_HEALTH_URL" || true)
+            echo "attempt $i -> HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 15
+          done
+          echo "::error::API health check failed"; exit 1

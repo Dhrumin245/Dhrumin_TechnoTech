@@ -8,8 +8,8 @@ const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
 /**
  * Prefix a path with the API base URL.
- * @param {string} path — e.g. '/api/projects'
- * @returns {string} — e.g. 'https://backend.koyeb.app/api/projects'
+ * @param {string} path — e.g. '/api/contact'
+ * @returns {string} — e.g. 'https://backend.koyeb.app/api/contact'
  */
 export function apiUrl(path) {
   return `${API_BASE}${path}`;

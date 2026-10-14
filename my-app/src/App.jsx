@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
 import { apiUrl } from './utils/api';
-import { Link, Route, Routes, useParams } from 'react-router-dom';
+import { Link, Navigate, Route, Routes } from 'react-router-dom';
 import './assets/css/style.css';
 import gsap from 'gsap';
 import ScrollTrigger from 'gsap/ScrollTrigger';
 import SplashCursor from './components/animations/Animations/SplashCursor/SplashCursor';
-import ProjectDetails from './pages/ProjectDetails';
-// import AdminProjects from './pages/AdminProjects';
+import ProjectsSection from './components/ProjectsSection';
 import Footer from './components/Footer';
 import ThemeToggle from './components/ThemeToggle';
 
@@ -14,7 +13,7 @@ gsap.registerPlugin(ScrollTrigger);
 
 const navItems = [
   { label: 'Services', href: '#services' },
-  { label: 'Work', href: '#work' },
+  { label: 'Projects', href: '#projects' },
   { label: 'Why Us', href: '#why-us' },
   { label: 'Process', href: '#process' },
   { label: 'Contact', href: '#contact' },
@@ -50,16 +49,6 @@ const services = [
     title: 'Cloud Launch Support',
     description:
       'Deployment, monitoring, CI/CD, and production checks so your product launches cleanly and keeps running after handoff.',
-  },
-];
-
-const projects = [
-  {
-    title: 'Project coming soon',
-    slug: 'coming-soon',
-    category: 'Upcoming',
-    description: 'Project coming soon',
-    stack: [],
   },
 ];
 
@@ -126,11 +115,11 @@ function HomePage() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
-  const [portfolioProjects, setPortfolioProjects] = useState(projects);
 
   // OTP verification state
   const [otp, setOtp] = useState('');
   const [emailVerified, setEmailVerified] = useState(false);
+  const [verificationToken, setVerificationToken] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
   const [verifyingOtp, setVerifyingOtp] = useState(false);
@@ -151,6 +140,7 @@ function HomePage() {
     if (emailVerified || otpSent) {
       setOtpSent(false);
       setEmailVerified(false);
+      setVerificationToken('');
       setOtp('');
       setFormMessage({ type: '', text: '' });
     }
@@ -205,6 +195,7 @@ function HomePage() {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setEmailVerified(true);
+        setVerificationToken(data.verificationToken || '');
         setOtpSent(false); // Disappear the OTP box once verified!
         setOtp('');
         setFormMessage({ type: 'success', text: '✓ Email verified successfully!' });
@@ -231,7 +222,7 @@ function HomePage() {
       const res = await fetch(apiUrl('/api/contact'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, message }),
+        body: JSON.stringify({ name, email, message, verificationToken }),
       });
 
       const resData = await res.json().catch(() => ({}));
@@ -243,7 +234,14 @@ function HomePage() {
         setOtp('');
         setOtpSent(false);
         setEmailVerified(false);
+        setVerificationToken('');
       } else {
+        if (res.status === 400 && /verif/i.test(resData.error || '')) {
+          // Verification expired or was rejected: send the visitor back to the verify step.
+          setEmailVerified(false);
+          setVerificationToken('');
+          setOtpSent(false);
+        }
         setFormMessage({ type: 'error', text: resData.error || 'Failed to send project brief.' });
       }
     } catch (error) {
@@ -253,24 +251,6 @@ function HomePage() {
       setSubmitLoading(false);
     }
   };
-
-  useEffect(() => {
-    const fetchProjects = async () => {
-      try {
-        const res = await fetch(apiUrl('/api/projects?status=published'));
-        if (!res.ok) return;
-
-        const data = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
-          setPortfolioProjects(data);
-        }
-      } catch (error) {
-        console.error('Error fetching projects:', error);
-      }
-    };
-
-    fetchProjects();
-  }, []);
 
   useEffect(() => {
     const hamburger = document.querySelector('.hamburger');
@@ -513,7 +493,7 @@ function HomePage() {
                 <a href="#contact" className="btn btn-primary">
                   Build With Us
                 </a>
-                <a href="#work" className="btn btn-secondary">
+                <a href="#projects" className="btn btn-secondary">
                   See The Work
                 </a>
               </div>
@@ -580,49 +560,7 @@ function HomePage() {
           </div>
         </section>
 
-        <section className="section projects" id="work">
-          <div className="container">
-            <div className="section-title reveal">
-              <span className="section-kicker">Selected Work</span>
-              <h2>Websites, APIs, and web apps that feel fast from day one.</h2>
-            </div>
-            <div className={`projects-grid count-${portfolioProjects.length > 3 ? 'many' : portfolioProjects.length}`}>
-              {portfolioProjects.map((project, index) => {
-                const stack = project.stack?.length ? project.stack : project.tags ?? [];
-                const coverLayout = project.coverLayout || 'top';
-                const coverFit = project.coverFit || 'contain';
-                const isFeatured = coverLayout === 'full';
-
-                return (
-                <Link
-                  className={`project-card reveal ${isFeatured ? 'featured-project' : ''} layout-${coverLayout}`}
-                  key={project.title}
-                  to={`/projects/${project.slug}`}
-                >
-                  <div className={`project-visual fit-${coverFit}`}>
-                    <span>{project.category || 'Case Study'}</span>
-                    {!(project.coverImage || project.image) ? (
-                      <div className="visual-grid"></div>
-                    ) : null}
-                    {project.coverImage || project.image ? (
-                      <img src={project.coverImage || project.image} alt={project.title || 'Project preview'} />
-                    ) : null}
-                  </div>
-                  <div className="project-details">
-                    <div className="project-tags">
-                      {stack.map((tag) => (
-                        <span key={tag}>{tag}</span>
-                      ))}
-                    </div>
-                    <h3>{project.title}</h3>
-                    <p>{project.description}</p>
-                  </div>
-                </Link>
-                );
-              })}
-            </div>
-          </div>
-        </section>
+        <ProjectsSection />
 
         <section className="section why-section" id="why-us">
           <div className="container why-grid">
@@ -820,221 +758,11 @@ function HomePage() {
   );
 }
 
-function ProjectComingSoon() {
-  const { slug } = useParams();
-  const project = projects.find((item) => item.slug === slug);
-  const title = project?.title ?? 'Project';
-
-  useEffect(() => {
-    const hamburger = document.querySelector('.hamburger');
-    const navLinks = document.querySelector('.nav-links');
-    const navLinksItems = document.querySelectorAll('.nav-links li');
-    const header = document.getElementById('header');
-
-    const handleMenuToggle = () => {
-      navLinks.classList.toggle('active');
-      hamburger.classList.toggle('active');
-    };
-
-    const handleMenuClose = () => {
-      navLinks.classList.remove('active');
-      hamburger.classList.remove('active');
-    };
-
-    const handleScroll = () => {
-      header.classList.toggle('scrolled', window.scrollY > 80);
-    };
-
-    hamburger.addEventListener('click', handleMenuToggle);
-    navLinksItems.forEach((item) => item.addEventListener('click', handleMenuClose));
-    window.addEventListener('scroll', handleScroll);
-
-    gsap.from('.coming-soon-panel > *', {
-      duration: 0.8,
-      y: 24,
-      opacity: 0,
-      stagger: 0.1,
-      ease: 'power3.out',
-    });
-
-    gsap.to('.shape-1', {
-      duration: 20,
-      x: 160,
-      y: 120,
-      repeat: -1,
-      yoyo: true,
-      ease: 'sine.inOut',
-    });
-
-    gsap.to('.shape-2', {
-      duration: 24,
-      x: -140,
-      y: -170,
-      repeat: -1,
-      yoyo: true,
-      ease: 'sine.inOut',
-    });
-
-    gsap.to('.shape-3', {
-      duration: 18,
-      x: 100,
-      y: -90,
-      repeat: -1,
-      yoyo: true,
-      ease: 'sine.inOut',
-    });
-
-    const canvas = document.getElementById('particle-canvas');
-    const ctx = canvas.getContext('2d');
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-
-    const particles = [];
-    const particleCount = window.innerWidth < 768 ? 45 : 90;
-    let animationFrameId;
-
-    class Particle {
-      constructor() {
-        this.x = Math.random() * canvas.width;
-        this.y = Math.random() * canvas.height;
-        this.size = Math.random() * 2.5 + 1;
-        this.speedX = Math.random() * 0.8 - 0.4;
-        this.speedY = Math.random() * 0.8 - 0.4;
-        this.alpha = Math.random() * 0.45 + 0.12;
-      }
-
-      update() {
-        this.x += this.speedX;
-        this.y += this.speedY;
-        if (this.x < 0 || this.x > canvas.width) this.speedX = -this.speedX;
-        if (this.y < 0 || this.y > canvas.height) this.speedY = -this.speedY;
-      }
-
-      draw() {
-        ctx.fillStyle = getParticleColor(this.alpha);
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    function initParticles() {
-      for (let i = 0; i < particleCount; i++) {
-        particles.push(new Particle());
-      }
-    }
-
-    function animateParticles() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      for (let i = 0; i < particles.length; i++) {
-        particles[i].update();
-        particles[i].draw();
-        for (let j = i; j < particles.length; j++) {
-          const dx = particles[i].x - particles[j].x;
-          const dy = particles[i].y - particles[j].y;
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          if (distance < 105) {
-            ctx.strokeStyle = getParticleLineColor(1 - distance / 105);
-            ctx.lineWidth = 0.45;
-            ctx.beginPath();
-            ctx.moveTo(particles[i].x, particles[i].y);
-            ctx.lineTo(particles[j].x, particles[j].y);
-            ctx.stroke();
-          }
-        }
-      }
-      animationFrameId = requestAnimationFrame(animateParticles);
-    }
-
-    const handleCanvasResize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    };
-
-    window.addEventListener('resize', handleCanvasResize);
-    initParticles();
-    animateParticles();
-
-    return () => {
-      hamburger.removeEventListener('click', handleMenuToggle);
-      navLinksItems.forEach((item) => item.removeEventListener('click', handleMenuClose));
-      window.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('resize', handleCanvasResize);
-      cancelAnimationFrame(animationFrameId);
-      gsap.killTweensOf(['.shape-1', '.shape-2', '.shape-3', '.coming-soon-panel > *']);
-    };
-  }, []);
-
-  return (
-    <>
-      <SplashCursor />
-      <div className="bg-shapes">
-        <div className="shape shape-1"></div>
-        <div className="shape shape-2"></div>
-        <div className="shape shape-3"></div>
-      </div>
-      <canvas id="particle-canvas"></canvas>
-
-      <header id="header">
-        <div className="container">
-          <nav>
-            <Link to="/" className="logo">
-              <img src="/logo.png" alt="Dhrumin's TechnoTech Logo" />
-              Dhrumin's <span>TechnoTech World</span>
-            </Link>
-            <ul className="nav-links">
-              {navItems.map((item) => (
-                <li key={item.href}>
-                  <Link to={`/${item.href}`}>{item.label}</Link>
-                </li>
-              ))}
-              <li className="mobile-theme-item">
-                <span>Appearance</span>
-                <ThemeToggle />
-              </li>
-            </ul>
-            <div className="nav-actions">
-              <Link to="/#contact" className="nav-cta">
-                Start a Project
-              </Link>
-              <div className="desktop-theme-toggle">
-                <ThemeToggle />
-              </div>
-            </div>
-            <div className="hamburger" aria-label="Open navigation" role="button" tabIndex="0">
-              <div></div>
-              <div></div>
-              <div></div>
-            </div>
-          </nav>
-        </div>
-      </header>
-
-      <main>
-        <section className="coming-soon-page">
-          <div className="container">
-            <div className="coming-soon-panel">
-              <span className="section-kicker">{title}</span>
-              <h1>Project coming soon</h1>
-              <p>This project page is being prepared. The full case study will be added here.</p>
-              <Link to="/#work" className="btn btn-secondary">
-                Back To Work
-              </Link>
-            </div>
-          </div>
-        </section>
-      </main>
-    </>
-  );
-}
-
 function App() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
-      <Route path="/projects/:slug" element={<ProjectDetails />} />
-      <Route path="/projects/*" element={<ProjectDetails />} />
-      {/* <Route path="/admin/projects" element={<AdminProjects />} /> */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

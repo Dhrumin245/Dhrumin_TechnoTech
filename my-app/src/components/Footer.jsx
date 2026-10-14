@@ -82,7 +82,7 @@ const Footer = () => {
             <h4>Contact Us:</h4>
             <p className="contact-address">Mumbai, Maharashtra, India |</p>
             <p className="contact-details">
-              <a href="tel:+917208154498">+91 7208154498</a> | <a href="mailto:[dhrumintechnotech@gmail.com]">[dhrumintechnotech@gmail.com]</a>
+              <a href="tel:+917208154498">+91 7208154498</a> | <a href="mailto:dhrumintechnotech@gmail.com">dhrumintechnotech@gmail.com</a>
             </p>
           </div>
         </div>
