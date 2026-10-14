@@ -80,7 +80,7 @@ jobs:
             const fs=require('fs'),c=require('crypto');
             const html=fs.readFileSync('dist/index.html','utf8');
             const csp=JSON.parse(fs.readFileSync('vercel.json','utf8')).headers[0].headers.find(h=>h.key==='Content-Security-Policy').value;
-            const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
+            const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script\s*>/gi)].map(m=>m[1]);
             for (const s of scripts) {
               const h='sha256-'+c.createHash('sha256').update(s).digest('base64');
               if(!csp.includes(h)){console.error('::error::CSP missing hash '+h);process.exit(1);}
