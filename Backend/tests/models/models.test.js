@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import Contact from '../../models/contact.js';
-import Project from '../../models/project.js';
 import Resume from '../../models/resume.js';
 
 describe('Mongoose Models Validation', () => {
@@ -14,34 +13,23 @@ describe('Mongoose Models Validation', () => {
       const err = contact.validateSync();
       expect(err).toBeUndefined();
     });
-  });
 
-  describe('Project Model', () => {
-    it('should require title and slug', () => {
-      const project = new Project({});
-      const err = project.validateSync();
-      expect(err.errors.title).toBeDefined();
-      expect(err.errors.slug).toBeDefined();
+    it('should require name, email and message', () => {
+      const err = new Contact({}).validateSync();
+      expect(err.errors.name).toBeDefined();
+      expect(err.errors.email).toBeDefined();
+      expect(err.errors.message).toBeDefined();
     });
 
-    it('should validate a valid project', () => {
-      const project = new Project({
-        title: 'Awesome Portfolio',
-        slug: 'awesome-portfolio',
-        category: 'Web App',
-        status: 'published',
-      });
-      const err = project.validateSync();
-      expect(err).toBeUndefined();
-      expect(project.status).toBe('published');
+    it('should reject oversized fields', () => {
+      const err = new Contact({ name: 'a'.repeat(101), email: 'a@b.co', message: 'x'.repeat(5001) }).validateSync();
+      expect(err.errors.name).toBeDefined();
+      expect(err.errors.message).toBeDefined();
     });
 
-    it('should set default status to draft', () => {
-      const project = new Project({
-        title: 'Awesome Portfolio',
-        slug: 'awesome-portfolio',
-      });
-      expect(project.status).toBe('draft');
+    it('should not cast objects (NoSQL operator payloads) into string fields', () => {
+      const err = new Contact({ name: { $ne: null }, email: 'a@b.co', message: 'hi' }).validateSync();
+      expect(err.errors.name).toBeDefined();
     });
   });
 

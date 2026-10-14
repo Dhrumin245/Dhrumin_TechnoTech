@@ -1,3 +1,5 @@
+import { randomInt, timingSafeEqual } from 'crypto';
+
 // In-memory OTP store with automatic expiry.
 // Each OTP entry: { code, expiresAt, attempts }
 
@@ -11,7 +13,14 @@ const COOLDOWN_MS = 60 * 1000; // 1 minute between OTP sends
  * Generate a random 6-digit OTP code.
  */
 function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return randomInt(100000, 1000000).toString();
+}
+
+function safeEqual(expected, provided) {
+  if (typeof provided !== 'string') return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**
@@ -19,7 +28,7 @@ function generateOTP() {
  * Returns { code, cooldown } — cooldown is true if the user must wait.
  */
 export function createOTP(email) {
-  const key = email.trim().toLowerCase();
+  const key = String(email).trim().toLowerCase();
   const existing = otpStore.get(key);
 
   // Enforce cooldown: can't request a new OTP within 1 minute
@@ -44,7 +53,7 @@ export function createOTP(email) {
  * Returns { valid, error }
  */
 export function verifyOTP(email, code) {
-  const key = email.trim().toLowerCase();
+  const key = String(email).trim().toLowerCase();
   const entry = otpStore.get(key);
 
   if (!entry) {
@@ -61,7 +70,7 @@ export function verifyOTP(email, code) {
     return { valid: false, error: 'Too many failed attempts. Please request a new code.' };
   }
 
-  if (entry.code !== code) {
+  if (!safeEqual(entry.code, code)) {
     entry.attempts += 1;
     return { valid: false, error: `Invalid code. ${MAX_ATTEMPTS - entry.attempts} attempt(s) remaining.` };
   }

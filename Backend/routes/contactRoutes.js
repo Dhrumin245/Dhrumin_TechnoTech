@@ -5,8 +5,14 @@ import dns from 'dns';
 import Contact from '../models/contact.js';
 import { isDisposableEmail } from '../utils/disposableEmails.js';
 import { createOTP, verifyOTP } from '../utils/otpStore.js';
+import { escapeHtml, sanitizeHeader } from '../utils/escapeHtml.js';
+import { issueVerificationToken, consumeVerificationToken, restoreVerificationToken } from '../utils/verificationStore.js';
 
 const router = express.Router();
+
+const LIMITS = { name: 100, email: 254, message: 5000 };
+const isNonEmptyString = (v, max) => typeof v === 'string' && v.trim().length > 0 && v.length <= max;
+const isOtpFormat = (v) => typeof v === 'string' && /^\d{6}$/.test(v);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -30,7 +36,7 @@ export const verifyEmailAuthenticity = async (email) => {
     return true;
   } catch (err) {
     if (err.code === 'ENOTFOUND' || err.code === 'ENODATA' || err.code === 'NXDOMAIN') {
-      console.warn(`Email authenticity check rejected domain ${domain}:`, err.code);
+      console.warn('Email authenticity check rejected a domain:', err.code);
       return false;
     }
     console.warn(`DNS lookup warning for domain ${domain} (${err.code || err.message}): proceeding with format validation.`);
@@ -70,7 +76,7 @@ const sendEmail = async ({ from, fromName, to, replyTo, subject, text, html }) =
       if (resendResult.error) {
         console.error('Resend API returned an error:', resendResult.error.message || resendResult.error);
       } else {
-        console.log('Email sent successfully via Resend to', to);
+        console.log('Email sent via Resend');
         return true;
       }
     } catch (resendError) {
@@ -100,7 +106,7 @@ const sendEmail = async ({ from, fromName, to, replyTo, subject, text, html }) =
         text,
         html,
       });
-      console.log('Email sent successfully via Nodemailer fallback to', to);
+      console.log('Email sent via Nodemailer');
       return true;
     } catch (emailError) {
       console.error('Error sending email via Nodemailer:', emailError);
@@ -120,7 +126,7 @@ const sendEmail = async ({ from, fromName, to, replyTo, subject, text, html }) =
 router.post('/send-otp', async (req, res) => {
   const { email } = req.body;
 
-  if (!email || typeof email !== 'string') {
+  if (!isNonEmptyString(email, LIMITS.email)) {
     return res.status(400).json({ error: 'Email is required.' });
   }
 
@@ -166,12 +172,8 @@ router.post('/send-otp', async (req, res) => {
     return res.status(500).json({ error: 'Failed to send verification code. Please try again.' });
   }
 
-  console.log(`OTP sent to ${email}`);
   res.status(200).json({ message: 'Verification code sent to your email.' });
 });
-
-// Store pre-verified email tokens (email -> expiry timestamp)
-export const verifiedEmailTokens = new Map();
 
 /**
  * POST /api/contact/verify-otp
@@ -180,7 +182,7 @@ export const verifiedEmailTokens = new Map();
 router.post('/verify-otp', async (req, res) => {
   const { email, otp } = req.body;
 
-  if (!email || !otp) {
+  if (!isNonEmptyString(email, LIMITS.email) || !isNonEmptyString(otp, 6)) {
     return res.status(400).json({ error: 'Email and verification code are required.' });
   }
 
@@ -190,11 +192,10 @@ router.post('/verify-otp', async (req, res) => {
     return res.status(400).json({ error: otpResult.error });
   }
 
-  // Store pre-verified token valid for 15 minutes
-  verifiedEmailTokens.set(email.trim().toLowerCase(), Date.now() + 15 * 60 * 1000);
+  // One-time token (15 min) that must accompany the form submission for this email
+  const verificationToken = issueVerificationToken(email);
 
-  console.log(`Email pre-verified successfully: ${email}`);
-  res.status(200).json({ message: 'Email verified successfully!' });
+  res.status(200).json({ message: 'Email verified successfully!', verificationToken });
 });
 
 /**
@@ -202,54 +203,67 @@ router.post('/verify-otp', async (req, res) => {
  * Step 2: Submit the contact form (requires verified email or valid OTP).
  */
 router.post('/', async (req, res) => {
-  const { name, email, message, otp } = req.body;
-  console.log('Received:', { name, email, message, otp: otp ? '***' : 'missing' });
+  const { name, email, message, otp } = req.body || {};
+
+  if (!isNonEmptyString(email, LIMITS.email)) {
+    return res.status(400).json({ error: 'A valid email is required.' });
+  }
 
   // Check for disposable/temp email
   if (isDisposableEmail(email)) {
     return res.status(400).json({ error: 'Temporary or disposable email addresses are not allowed.' });
   }
 
-  const emailKey = email ? email.trim().toLowerCase() : '';
-  const isPreVerified = verifiedEmailTokens.has(emailKey) && verifiedEmailTokens.get(emailKey) > Date.now();
+  if (!isNonEmptyString(name, LIMITS.name) || !isNonEmptyString(message, LIMITS.message)) {
+    return res.status(400).json({ error: 'Name and project brief are required (name max 100, brief max 5000 characters).' });
+  }
 
-  if (!isPreVerified) {
-    if (!otp) {
+  const { verificationToken } = req.body || {};
+  let tokenUsed = null;
+
+  if (verificationToken !== undefined && verificationToken !== null && verificationToken !== '') {
+    // Normal path: the token handed out by /verify-otp, valid once, for this exact email.
+    if (!consumeVerificationToken(email, verificationToken)) {
+      return res.status(400).json({ error: 'Email verification expired or invalid. Please verify your email again.' });
+    }
+    tokenUsed = verificationToken;
+  } else {
+    // Fallback: a fresh, valid OTP sent together with the form.
+    if (otp === undefined || otp === null || otp === '') {
       return res.status(400).json({ error: 'Email verification code is required.' });
     }
-
+    if (!isOtpFormat(otp)) {
+      return res.status(400).json({ error: 'Invalid code.' });
+    }
     const otpResult = verifyOTP(email, otp);
     if (!otpResult.valid) {
       return res.status(400).json({ error: otpResult.error });
     }
-  } else {
-    // Consume pre-verified token
-    verifiedEmailTokens.delete(emailKey);
   }
 
   try {
     const newContact = new Contact({ name, email, message });
     await newContact.save();
-    console.log('Saved successfully');
 
     // Send notification email to you
     const recipient = process.env.EMAIL_TO || 'dhrumintechnotech@gmail.com';
-    const formattedSenderName = name ? `${name} via Portfolio` : 'Portfolio Contact';
+    const safeName = sanitizeHeader(name);
+    const formattedSenderName = safeName ? `${safeName} via Portfolio` : 'Portfolio Contact';
 
     await sendEmail({
       fromName: formattedSenderName,
       to: recipient,
       replyTo: email,
-      subject: `New Portfolio Project Brief from ${name || 'a visitor'}`,
+      subject: `New Portfolio Project Brief from ${safeName || 'a visitor'}`,
       text: `You have received a new contact form submission:\n\nName: ${name}\nEmail: ${email}\n\nProject Brief:\n${message}`,
       html: `
         <div style="font-family: sans-serif; padding: 20px; color: #333; line-height: 1.6; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px;">
           <h2 style="color: #00bcd4; border-bottom: 2px solid #00bcd4; padding-bottom: 10px; margin-top: 0;">New Project Brief Submission</h2>
-          <p><strong>Name:</strong> ${name}</p>
-          <p><strong>Business Email:</strong> <a href="mailto:${email}">${email}</a></p>
+          <p><strong>Name:</strong> ${escapeHtml(name)}</p>
+          <p><strong>Business Email:</strong> <a href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a></p>
           <p style="color: #27ae60;"><strong>✓ Email Verified via OTP</strong></p>
           <div style="background-color: #f9f9f9; padding: 15px; border-left: 4px solid #00bcd4; margin-top: 15px; border-radius: 4px;">
-            <p style="margin: 0; white-space: pre-wrap;"><strong>Project Brief:</strong><br/>${message}</p>
+            <p style="margin: 0; white-space: pre-wrap;"><strong>Project Brief:</strong><br/>${escapeHtml(message)}</p>
           </div>
           <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
           <p style="font-size: 12px; color: #999; text-align: center;">Sent from your Portfolio contact form backend.</p>
@@ -260,6 +274,8 @@ router.post('/', async (req, res) => {
     res.status(200).json({ message: 'Message sent successfully' });
   } catch (error) {
     console.error('Error saving contact:', error);
+    // Server-side failure: give the one-time token back so the visitor can retry without re-verifying.
+    if (tokenUsed) restoreVerificationToken(email, tokenUsed);
     res.status(500).json({ error: 'Failed to send message' });
   }
 });

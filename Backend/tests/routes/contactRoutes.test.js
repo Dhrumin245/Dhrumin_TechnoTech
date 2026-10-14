@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 import dns from 'dns';
-import contactRoutes, { verifiedEmailTokens } from '../../routes/contactRoutes.js';
+import contactRoutes from '../../routes/contactRoutes.js';
+import { clearVerificationTokens } from '../../utils/verificationStore.js';
 import Contact from '../../models/contact.js';
 import nodemailer from 'nodemailer';
 
@@ -71,7 +72,7 @@ describe('Contact Routes', () => {
     app.use('/api/contact', contactRoutes);
     vi.clearAllMocks();
     otpStoreMap.clear();
-    verifiedEmailTokens.clear();
+    clearVerificationTokens();
     process.env = { ...originalEnv };
     dns.promises.resolveMx.mockResolvedValue([{ exchange: 'mail.example.com', priority: 10 }]);
   });
@@ -170,14 +171,15 @@ describe('Contact Routes', () => {
 
     // 1. Verify OTP first
     otpStoreMap.set('jane@example.com', '123456');
-    await request(app)
+    const verify = await request(app)
       .post('/api/contact/verify-otp')
       .send({ email: 'jane@example.com', otp: '123456' });
+    expect(verify.body.verificationToken).toMatch(/^[A-Za-z0-9_-]{40,}$/);
 
-    // 2. Submit form without requiring OTP again
+    // 2. Submit form with the one-time verification token (no OTP needed again)
     const response = await request(app)
       .post('/api/contact')
-      .send({ name: 'Jane Doe', email: 'jane@example.com', message: 'Build my app' });
+      .send({ name: 'Jane Doe', email: 'jane@example.com', message: 'Build my app', verificationToken: verify.body.verificationToken });
 
     expect(response.status).toBe(200);
     expect(response.body.message).toBe('Message sent successfully');
